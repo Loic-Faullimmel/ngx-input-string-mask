@@ -1,0 +1,13 @@
+{
+  "name": "ngx-input-string-mask",
+  "version": "0.0.1",
+  "peerDependencies": {
+    "@angular/common": ">=15",
+    "@angular/core": ">=15",
+    "rxjs": ">=7"
+  },
+  "dependencies": {
+    "tslib": ">=2"
+  },
+  "sideEffects": false
+}
