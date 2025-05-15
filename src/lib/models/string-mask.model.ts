@@ -49,7 +49,7 @@
  */
 export interface StringMask {
   name: string;
-  inputFilterRegex: string;
+  inputFilterRegex: string | RegExp;
   notation: MaskNotation;
 }
 
