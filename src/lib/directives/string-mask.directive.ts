@@ -1,175 +1,188 @@
-import {
-  Directive,
-  ElementRef,
-  HostListener,
-  Inject,
-  Input,
-  OnInit,
-  Optional,
-  Self
-} from '@angular/core';
+import { Directive, ElementRef, HostListener, Inject, Input, OnInit, Optional, Self } from '@angular/core';
 import { AbstractControl, ControlContainer, ControlValueAccessor, NgControl } from '@angular/forms';
 import { IStringMaskMessages, StringMaskMessages } from '../models/string-mask-messages.model';
 import { StringMask } from '../models/string-mask.model';
 import { StringMaskHelper } from '../services/string-mask-helper';
 
-/**
- * Directive to format, filter, and validate the text value of an input element.
- *
- * @example
- * ```html
- * <input appStringMask [maskName]="'SerialNumber'" [inputFormControl]="formControl">
- * ```
- */
 @Directive({
   selector: 'input[appStringMask]',
 })
 export class StringMaskDirective implements OnInit, ControlValueAccessor {
   @Input() maskName: string;
 
-  private stringMaskHelper: StringMaskHelper;
-  private validationError: string | null;
-  private onChange: (value: any) => void;
-  private onTouched: () => void;
-  private validationMessages: StringMaskMessages;
+  private maskHelper: StringMaskHelper;
+  private error: string | null;
+  private onChangeFn: (value: any) => void;
+  private onTouchedFn: () => void;
+  private messages: StringMaskMessages;
+
+  private get control(): AbstractControl {
+    return this.ngControl?.control || this.controlContainer?.control?.get(this.el.nativeElement.getAttribute('formControlName'));
+  }
 
   constructor(
-      private readonly el: ElementRef,
-      @Inject('STRING_MASKS') private masks: StringMask[],
-      @Inject('STRING_MASK_TRANSLATIONS') private translations: Partial<IStringMaskMessages>,
-      @Optional() @Self() private ngControl: NgControl,
-      @Optional() private controlContainer: ControlContainer
+    private readonly el: ElementRef,
+    @Inject('STRING_MASKS') private masks: StringMask[],
+    @Inject('STRING_MASK_TRANSLATIONS') private translations: Partial<IStringMaskMessages>,
+    @Optional() @Self() private ngControl: NgControl,
+    @Optional() private controlContainer: ControlContainer
   ) {
-      this.validationMessages = new StringMaskMessages(translations);
-      if (this.ngControl) {
-          this.ngControl.valueAccessor = this;
-      }
+    this.messages = new StringMaskMessages(translations);
+    if (this.ngControl) {
+      this.ngControl.valueAccessor = this;
+    }
   }
 
   ngOnInit() {
-      this.stringMaskHelper = new StringMaskHelper(this.maskName, this.masks);
-      this.el.nativeElement.classList.add('no-typing-caret');
+    this.maskHelper = new StringMaskHelper(this.maskName, this.masks);
+    this.el.nativeElement.classList.add('no-typing-caret');
   }
 
+  // ControlValueAccessor methods
+
   writeValue(value: any): void {
-      this.el.nativeElement.value = value || '';
+    this.el.nativeElement.value = value || '';
   }
 
   registerOnChange(fn: any): void {
-      this.onChange = fn;
+    this.onChangeFn = fn;
   }
 
   registerOnTouched(fn: any): void {
-      this.onTouched = fn;
+    this.onTouchedFn = fn;
   }
 
   setDisabledState?(isDisabled: boolean): void {
-      this.el.nativeElement.disabled = isDisabled;
+    this.el.nativeElement.disabled = isDisabled;
   }
 
-  private get control(): AbstractControl {
-      return this.ngControl ? this.ngControl.control : this.controlContainer.control.get(this.el.nativeElement.getAttribute('formControlName'));
+  // HostListeners for input events
+
+  @HostListener('focus')
+  handleFocus(): void {
+    if (!this.el.nativeElement.value) {
+      this.autocompletePrefix();
+    }
   }
 
-  private setError(text: string): void {
-      this.validationError = text;
-      this.control.setErrors({ stringMask: text });
+  @HostListener('focusout')
+  handleFocusOut(): void {
+    const value = this.el.nativeElement.value;
+    if (!this.maskHelper.validate(value)) {
+      this.setError(this.messages.invalidNotation);
+    } else {
+      this.clearError();
+    }
   }
 
-  private cleanError(): void {
-      this.validationError = null;
-      this.control.setErrors(null);
-  }
+  @HostListener('beforeinput', ['$event'])
+  handleBeforeInput(event: InputEvent): void {
+    const value = this.el.nativeElement.value;
+    const newChar = event.data;
 
-  private publishError(): void {
-      this.control.setErrors({ stringMask: this.validationError || '' });
-  }
+    if (this.isDeletion(event)) {
+      this.removeChar(value);
+      event.preventDefault();
+      return;
+    }
 
-  @HostListener('focus', ['$event'])
-  onInputFocus(): void {
-      this.autocompleteMaskPrefix();
-  }
+    if (newChar?.length === 1) {
+      this.addChar(newChar, value);
+      event.preventDefault();
+      return;
+    }
 
-  @HostListener('focusout', ['$event'])
-  onInputUnfocus(): void {
-      const inputValue = this.el.nativeElement.value;
-      if (!this.stringMaskHelper.validate(inputValue)) {
-          this.setError(this.validationMessages.invalidNotation);
-          this.publishError();
-      } else {
-          this.cleanError();
+    if (this.isPaste(event)) {
+      for (const char of newChar) {
+        this.addChar(char, this.el.nativeElement.value);
       }
+      event.preventDefault();
+      this.handleFocusOut();
+      return;
+    }
+
+    throw new Error(`[string-mask-input] Invalid input value: ${newChar}`);
   }
 
-  @HostListener('keypress', ['$event'])
-  onInputKeypress(keyEvent: KeyboardEvent): void {
-      const keyValue = keyEvent.key;
-      const prevInputValue = this.el.nativeElement.value;
-      const currInputValue = prevInputValue + this.stringMaskHelper.filter(keyValue);
-      let finalInputValue = prevInputValue + this.stringMaskHelper.predictNextCharacter(prevInputValue) + this.stringMaskHelper.filter(keyValue);
-      finalInputValue += this.stringMaskHelper.predictNextCharacter(finalInputValue);
-
-      if (prevInputValue === currInputValue) {
-          this.setError(this.validationMessages.unauthorizedChar);
-          keyEvent.preventDefault();
-          return;
-      }
-      if (finalInputValue.length > this.stringMaskHelper.appliedMask.notation.totalLength) {
-          this.setError(this.validationMessages.maxSizeReached);
-          keyEvent.preventDefault();
-          return;
-      }
-
-      this.cleanError();
-      keyEvent.preventDefault();
-      this.el.nativeElement.value = finalInputValue;
-      this.onChange(finalInputValue);
+  @HostListener('select')
+  handleSelect(): void {
+    this.deselectInput();
   }
 
-  @HostListener('keydown', ['$event'])
-  onInputKeydown(keyEvent: KeyboardEvent): void {
-      const inputValue = this.el.nativeElement.value;
+  // Private methods
 
-      if (!inputValue) {
-          this.onInputFocus();
-      }
-      if (keyEvent.keyCode === 46 || keyEvent.keyCode === 8) {
-          if (!this.isMaskPrefixEmpty() && this.isInputContainingOnlyPrefix(inputValue)) {
-              this.setError(this.validationMessages.cannotDelete);
-              keyEvent.preventDefault();
-              return;
-          } else {
-              this.cleanError();
-              keyEvent.preventDefault();
-              this.el.nativeElement.value = inputValue.slice(0, -1);
-              this.onChange(this.el.nativeElement.value);
-          }
-      }
+  private deselectInput(): void {
+    const input = this.el.nativeElement as HTMLInputElement;
+    input.selectionStart = input.selectionEnd;
   }
 
-  @HostListener('keyup', ['$event'])
-  onInputKeyup(keyEvent: KeyboardEvent): void {
-      const inputValue = this.el.nativeElement.value;
-      if (this.stringMaskHelper.validate(inputValue)) {
-          this.publishError();
-          setTimeout(() => this.cleanError(), 3000);
-      } else {
-          this.publishError();
-      }
+  private setError(message: string): void {
+    this.error = message;
+    this.control?.setErrors({ stringMask: message });
   }
 
-  private autocompleteMaskPrefix(): void {
-      if (!this.el.nativeElement.value) {
-          this.el.nativeElement.value = this.stringMaskHelper.appliedMask.notation.prefix;
-          this.onChange(this.el.nativeElement.value);
-      }
+  private clearError(): void {
+    this.error = null;
+    this.control?.setErrors(null);
   }
 
-  private isInputContainingOnlyPrefix(inputValue: string) {
-      return inputValue.length <= this.stringMaskHelper.appliedMask.notation.prefix.length;
+  private autocompletePrefix(): void {
+    this.el.nativeElement.value = this.maskHelper.appliedMask.notation.prefix;
+    this.onChangeFn(this.el.nativeElement.value);
   }
 
-  private isMaskPrefixEmpty() {
-      return this.stringMaskHelper.appliedMask.notation.prefix.length <= 0;
+  private isPrefixOnly(value: string): boolean {
+    return value.length <= this.maskHelper.appliedMask.notation.prefix.length;
+  }
+
+  private isPrefixEmpty(): boolean {
+    return this.maskHelper.appliedMask.notation.prefix.length === 0;
+  }
+
+  private addChar(newChar: string, value: string): void {
+    const filteredChar = this.maskHelper.filter(newChar);
+    const nextValue = value + filteredChar;
+    let finalValue = value + this.maskHelper.predictNextCharacter(value) + filteredChar;
+    finalValue += this.maskHelper.predictNextCharacter(finalValue);
+
+    if (value === nextValue) {
+      this.setError(this.messages.unauthorizedChar);
+      return;
+    }
+
+    if (finalValue.length > this.maskHelper.appliedMask.notation.totalLength) {
+      this.setError(this.messages.maxSizeReached);
+      return;
+    }
+
+    this.clearError();
+    this.el.nativeElement.value = finalValue;
+    this.onChangeFn(finalValue);
+  }
+
+  private removeChar(value: string): void {
+    if (!this.isPrefixEmpty() && this.isPrefixOnly(value)) {
+      this.setError(this.messages.cannotDelete);
+    } else {
+      this.clearError();
+      this.el.nativeElement.value = value.slice(0, -1);
+      this.onChangeFn(this.el.nativeElement.value);
+      this.handleFocusOut();
+    }
+  }
+
+  private isPaste(event: InputEvent): boolean {
+    return (
+      // For desktop devices
+      event.inputType === 'insertFromPaste' ||
+      event.inputType === 'insertFromDrop' ||
+      event.inputType === 'insertFromCompositionStart' ||
+      // For mobile devices
+      (event.inputType === 'insertText' && event.data.length > 1)
+    );
+  }
+
+  private isDeletion(event: InputEvent): boolean {
+    return event.inputType.startsWith('delete');
   }
 }
